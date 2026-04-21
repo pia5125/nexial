@@ -1,6 +1,6 @@
 """
-SUPER FRIDAY Scraper - Optimized with Concurrent Subcategory Scraping
-Scrapes https://www.sheeel.com/ar/sale11.html and all subcategories
+ELECTRONIC FESTIVAL Scraper - Optimized with Concurrent Subcategory Scraping
+Scrapes https://www.sheeel.com/ar/electronic-festival.html and all subcategories
 Uses asyncio + semaphore for parallel subcategory processing
 Saves data to S3 with date partitioning and downloads images  
 Each subcategory is saved as a separate sheet in the Excel file
@@ -43,11 +43,11 @@ def clean_for_excel(value):
     
     return value
 
-class SuperFridayScraper:
+class ElectronicFestivalScraper:
     def __init__(self, s3_bucket=None, aws_access_key=None, aws_secret_key=None, max_concurrent_subcategories=3):
-        self.base_url = "https://www.sheeel.com/ar/sale11.html"
-        self.category = "super_friday"
-        self.subcategories ={}  # Will store {subcategory_name: [products]}
+        self.base_url = "https://www.sheeel.com/ar/electronic-festival.html"
+        self.category = "electronic_festival"
+        self.subcategories = {}  # Will store {subcategory_name: [products]}
         self.all_products = []  # All products combined
         self.s3_bucket = s3_bucket
         self.max_concurrent = max_concurrent_subcategories  # Control concurrency
@@ -97,7 +97,7 @@ class SuperFridayScraper:
                 name = name.strip()
                 
                 # Filter: Only include URLs that belong to this category
-                if url and name and '/ar/sale11/' in url:
+                if url and name and '/ar/electronic-festival/' in url:
                     # Extract clean subcategory slug from URL
                     slug = url.split('/')[-1].replace('.html', '')
                     
@@ -118,6 +118,8 @@ class SuperFridayScraper:
             
         except Exception as e:
             print(f"❌ Error extracting subcategories: {e}")
+            # If no subcategories found, treat the main page as a single category
+            print("ℹ Treating main page as single category (no subcategories)")
             return []
     
     async def has_next_page(self, page):
@@ -360,11 +362,60 @@ class SuperFridayScraper:
             
             return subcategory['slug'], subcategory['name'], subcategory_products
     
+    async def scrape_main_page_only(self, browser_context):
+        """Scrape the main page when no subcategories are found"""
+        
+        print("\n" + "="*70)
+        print("📄 SCRAPING MAIN PAGE (NO SUBCATEGORIES)")
+        print("="*70)
+        
+        page = await browser_context.new_page()
+        all_products = []
+        
+        try:
+            print("📡 Loading main page...")
+            response = await page.goto(self.base_url, wait_until='networkidle', timeout=30000)
+            if response and response.status == 404:
+                print(f"❌ Main category page returned 404 - URL may have changed: {self.base_url}")
+                await page.close()
+                return all_products
+            print(f"✓ Page loaded: {await page.title()}\n")
+            
+            page_num = 1
+            
+            while True:
+                page_products = await self.scrape_page(page, page_num, self.category)
+                all_products.extend(page_products)
+                
+                if await self.has_next_page(page):
+                    page_num += 1
+                    print(f"\n⏳ Waiting 2s before next page...")
+                    await asyncio.sleep(2)
+                    next_url = f"{self.base_url}?p={page_num}"
+                    print(f"📡 Loading page {page_num}: {next_url}")
+                    response = await page.goto(next_url, wait_until='networkidle', timeout=30000)
+                    if response and response.status == 404:
+                        print(f"  ⚠ Page {page_num} returned 404, stopping pagination")
+                        break
+                else:
+                    print(f"\n✓ No more pages found. Reached last page: {page_num}")
+                    break
+        
+        except Exception as e:
+            print(f"\n❌ Error scraping main page: {e}")
+            import traceback
+            traceback.print_exc()
+        
+        finally:
+            await page.close()
+        
+        return all_products
+
     async def scrape_all_subcategories(self):
         """Scrape all subcategories concurrently with semaphore control"""
         
         print("\n" + "="*70)
-        print("SUPER FRIDAY SCRAPER - CONCURRENT SUBCATEGORIES")
+        print("ELECTRONIC FESTIVAL SCRAPER - CONCURRENT SUBCATEGORIES")
         print("="*70)
         print(f"\nMain URL: {self.base_url}")
         print(f"Max Concurrent Subcategories: {self.max_concurrent}\n")
@@ -391,7 +442,15 @@ class SuperFridayScraper:
                 await page.close()
                 
                 if not subcategories:
-                    print("❌ No subcategories found!")
+                    # No subcategories - scrape main page directly
+                    print("ℹ No subcategories found. Scraping main page directly...")
+                    products = await self.scrape_main_page_only(context)
+                    if products:
+                        self.subcategories[self.category] = {
+                            'name': self.category,
+                            'products': products
+                        }
+                        self.all_products.extend(products)
                     return
                 
                 # Create semaphore for concurrency control
@@ -557,7 +616,7 @@ class SuperFridayScraper:
         
         # Generate filename
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"super_friday_{timestamp}.xlsx"
+        filename = f"electronic_festival_{timestamp}.xlsx"
         local_path = self.local_data_dir / filename
         
         # Create Excel writer
@@ -576,7 +635,6 @@ class SuperFridayScraper:
                     df = df.drop(columns=['local_image_paths'])
                 
                 # Clean ALL cells (including nested lists/dicts) to remove illegal Excel characters
-                # Use map() to apply clean_for_excel to every single cell
                 try:
                     df = df.map(clean_for_excel)  # pandas >= 2.1.0
                 except AttributeError:
@@ -595,7 +653,6 @@ class SuperFridayScraper:
                 df_all = df_all.drop(columns=['local_image_paths'])
             
             # Clean ALL cells (including nested lists/dicts) to remove illegal Excel characters
-            # Use map() to apply clean_for_excel to every single cell
             try:
                 df_all = df_all.map(clean_for_excel)  # pandas >= 2.1.0
             except AttributeError:
@@ -643,7 +700,7 @@ class SuperFridayScraper:
         
         # Upload to S3
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        excel_filename = f"super_friday_{timestamp}.xlsx"
+        excel_filename = f"electronic_festival_{timestamp}.xlsx"
         excel_s3_key = f"sheeel_data/year={self.year}/month={self.month}/day={self.day}/{self.category}/excel-files/{excel_filename}"
         self.upload_to_s3(excel_path, excel_s3_key)
         
@@ -653,7 +710,7 @@ class SuperFridayScraper:
         """Main execution flow"""
         
         print("\n" + "="*70)
-        print("SUPER FRIDAY SCRAPER - OPTIMIZED (CONCURRENT)")
+        print("ELECTRONIC FESTIVAL SCRAPER - OPTIMIZED (CONCURRENT)")
         print("="*70)
         print(f"\nDate: {self.year}-{self.month}-{self.day}")
         print(f"Category: {self.category}")
@@ -706,7 +763,7 @@ if __name__ == "__main__":
     max_concurrent = int(os.getenv('MAX_CONCURRENT_SUBCATEGORIES', '3'))
     
     # Run scraper
-    scraper = SuperFridayScraper(
+    scraper = ElectronicFestivalScraper(
         s3_bucket=s3_bucket,
         aws_access_key=aws_access_key,
         aws_secret_key=aws_secret_key,
