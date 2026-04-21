@@ -59,7 +59,7 @@ jobs:
       - name: Install Python dependencies
         if: steps.should_run.outputs.run == 'true'
         run: |
-          pip install -r nexial/${{ matrix.category.name }}/requirements.txt
+          pip install -r ${{ matrix.category.name }}/requirements.txt
 
       - name: Install Playwright browsers
         if: steps.should_run.outputs.run == 'true'
@@ -69,7 +69,7 @@ jobs:
 
       - name: Run scraper
         if: steps.should_run.outputs.run == 'true'
-        working-directory: nexial/${{ matrix.category.name }}
+        working-directory: ${{ matrix.category.name }}
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
@@ -83,7 +83,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.category.name }}-data-${{ github.run_id }}
-          path: nexial/${{ matrix.category.name }}/data/
+          path: ${{ matrix.category.name }}/data/
           retention-days: 7
           if-no-files-found: warn
 
