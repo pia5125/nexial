@@ -1,0 +1,96 @@
+name: Daily pipeline (Nexial) - Cloudflare R2
+
+on:
+  schedule:
+    - cron: '0 2 */2 * *'  # Every 2 days at 2:00 AM UTC (same as original)
+  workflow_dispatch:
+    inputs:
+      category:
+        description: 'Category to scrape'
+        required: true
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - super_friday
+          - electronic_festival
+          - new_arrivals
+
+jobs:
+  scrape:
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        category:
+          - name: super_friday
+            display_name: Super Friday
+          - name: electronic_festival
+            display_name: Electronic Festival
+          - name: new_arrivals
+            display_name: New Arrivals
+
+    name: Scrape ${{ matrix.category.display_name }}
+
+    steps:
+      - name: Check if this category should run
+        id: should_run
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            if [[ "${{ github.event.inputs.category }}" == "all" || "${{ github.event.inputs.category }}" == "${{ matrix.category.name }}" ]]; then
+              echo "run=true" >> $GITHUB_OUTPUT
+            else
+              echo "run=false" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "run=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Checkout code
+        if: steps.should_run.outputs.run == 'true'
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        if: steps.should_run.outputs.run == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python dependencies
+        if: steps.should_run.outputs.run == 'true'
+        run: |
+          pip install -r CF/${{ matrix.category.name }}/requirements.txt
+
+      - name: Install Playwright browsers
+        if: steps.should_run.outputs.run == 'true'
+        run: |
+          playwright install chromium
+          playwright install-deps chromium
+
+      - name: Run scraper
+        if: steps.should_run.outputs.run == 'true'
+        working-directory: CF/${{ matrix.category.name }}
+        env:
+          CF_R2_ACCESS_KEY_ID: ${{ secrets.CF_R2_ACCESS_KEY_ID }}
+          CF_R2_SECRET_ACCESS_KEY: ${{ secrets.CF_R2_SECRET_ACCESS_KEY }}
+          CF_R2_BUCKET_NAME: ${{ secrets.CF_R2_BUCKET_NAME }}
+          CF_R2_ENDPOINT_URL: ${{ secrets.CF_R2_ENDPOINT_URL }}
+          MAX_CONCURRENT_SUBCATEGORIES: '3'
+        run: |
+          python scraper.py
+
+      - name: Upload artifacts (backup)
+        if: steps.should_run.outputs.run == 'true' && always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.category.name }}-data-${{ github.run_id }}
+          path: CF/${{ matrix.category.name }}/data/
+          retention-days: 7
+          if-no-files-found: warn
+
+      - name: Notify on failure
+        if: steps.should_run.outputs.run == 'true' && failure()
+        run: |
+          echo "❌ ${{ matrix.category.display_name }} scraper failed!"
+          echo "Check the logs above for details."
+          exit 1
