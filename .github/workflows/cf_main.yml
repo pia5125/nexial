@@ -15,6 +15,7 @@ on:
           - super_friday
           - electronic_festival
           - new_arrivals
+          - buy_now_pay_later
 
 jobs:
   scrape:
@@ -29,6 +30,8 @@ jobs:
             display_name: Electronic Festival
           - name: new_arrivals
             display_name: New Arrivals
+          - name: buy_now_pay_later
+            display_name: Buy Now Pay Later
 
     name: Scrape ${{ matrix.category.display_name }}
 
