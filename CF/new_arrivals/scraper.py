@@ -49,6 +49,19 @@ class NewArrivalsScraper:
         self.local_data_dir.mkdir(exist_ok=True)
         self.local_images_dir.mkdir(exist_ok=True)
 
+    def _goto(self, page, url, timeout=60000, retries=3):
+        """Navigate to a URL. Uses domcontentloaded because networkidle rarely settles on sheeel.com."""
+        last_error = None
+        for attempt in range(1, retries + 1):
+            try:
+                return page.goto(url, wait_until='domcontentloaded', timeout=timeout)
+            except Exception as e:
+                last_error = e
+                if attempt < retries:
+                    print(f"  ⚠ Navigation attempt {attempt}/{retries} failed, retrying in 2s...")
+                    time.sleep(2)
+        raise last_error
+
     def has_next_page(self, page):
         try:
             next_button = page.query_selector('.pages-item-next a.next')
@@ -99,7 +112,7 @@ class NewArrivalsScraper:
     def scrape_product_detail(self, context, product_url, index):
         try:
             detail_page = context.new_page()
-            response = detail_page.goto(product_url, wait_until='networkidle', timeout=30000)
+            response = self._goto(detail_page, product_url)
             if response and response.status == 404:
                 print(f"       ⚠ Skipping (404 Not Found): {product_url}")
                 detail_page.close()
@@ -211,7 +224,7 @@ class NewArrivalsScraper:
 
             try:
                 print("📡 Loading first page...")
-                response = page.goto(self.base_url, wait_until='networkidle', timeout=30000)
+                response = self._goto(page, self.base_url)
                 if response and response.status == 404:
                     print(f"❌ Main category page returned 404 - URL may have changed: {self.base_url}")
                     return
@@ -229,7 +242,7 @@ class NewArrivalsScraper:
                         time.sleep(2)
                         next_url = f"{self.base_url}?p={page_num}"
                         print(f"📡 Loading page {page_num}: {next_url}")
-                        response = page.goto(next_url, wait_until='networkidle', timeout=30000)
+                        response = self._goto(page, next_url)
                         if response and response.status == 404:
                             print(f"  ⚠ Page {page_num} returned 404, stopping pagination")
                             break
