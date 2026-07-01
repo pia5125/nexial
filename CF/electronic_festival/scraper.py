@@ -12,6 +12,7 @@ import asyncio
 import json
 import re
 import os
+import sys
 import requests
 from datetime import datetime
 from pathlib import Path
@@ -21,6 +22,11 @@ import boto3
 from botocore.config import Config
 from urllib.parse import urlparse
 import hashlib
+
+_CF_ROOT = Path(__file__).resolve().parent.parent
+if str(_CF_ROOT) not in sys.path:
+    sys.path.insert(0, str(_CF_ROOT))
+from request_metrics import RequestMetricsTracker, build_daily_summary
 
 # Helper function to clean illegal characters for Excel
 def clean_for_excel(value):
@@ -74,6 +80,14 @@ class ElectronicFestivalScraper:
         self.local_images_dir = self.local_data_dir / "images"
         self.local_data_dir.mkdir(exist_ok=True)
         self.local_images_dir.mkdir(exist_ok=True)
+
+        self.metrics = RequestMetricsTracker()
+
+    def _track_playwright_response(self, response, name=None, slug=None):
+        if response is None:
+            self.metrics.record_failure(name=name, slug=slug, detail="no response")
+            return
+        self.metrics.record_http_response(response.status, name=name, slug=slug)
 
     async def get_subcategories(self, page):
         """Extract all subcategory links from the main category page"""
@@ -161,6 +175,7 @@ class ElectronicFestivalScraper:
         try:
             detail_page = await context.new_page()
             response = await detail_page.goto(product_url, wait_until='networkidle', timeout=30000)
+            self._track_playwright_response(response)
             if response and response.status == 404:
                 print(f"       ⚠ Skipping (404 Not Found): {product_url}")
                 await detail_page.close()
@@ -274,6 +289,9 @@ class ElectronicFestivalScraper:
             try:
                 print("📡 Loading first page...")
                 response = await page.goto(subcategory['url'], wait_until='networkidle', timeout=30000)
+                self._track_playwright_response(
+                    response, name=subcategory['name'], slug=subcategory['slug']
+                )
                 if response and response.status == 404:
                     print(f"⚠ Subcategory '{subcategory['name']}' returned 404 - URL may have changed. Skipping.")
                     await page.close()
@@ -293,6 +311,9 @@ class ElectronicFestivalScraper:
                         next_url = f"{subcategory['url']}?p={page_num}"
                         print(f"📡 Loading page {page_num}: {next_url}")
                         response = await page.goto(next_url, wait_until='networkidle', timeout=30000)
+                        self._track_playwright_response(
+                            response, name=subcategory['name'], slug=subcategory['slug']
+                        )
                         if response and response.status == 404:
                             print(f"  ⚠ Page {page_num} returned 404, stopping pagination")
                             break
@@ -308,6 +329,11 @@ class ElectronicFestivalScraper:
 
             except Exception as e:
                 print(f"\n❌ Error scraping subcategory {subcategory['name']}: {e}")
+                self.metrics.record_failure(
+                    name=subcategory['name'],
+                    slug=subcategory['slug'],
+                    detail=str(e)[:120],
+                )
                 import traceback
                 traceback.print_exc()
 
@@ -329,6 +355,7 @@ class ElectronicFestivalScraper:
         try:
             print("📡 Loading main page...")
             response = await page.goto(self.base_url, wait_until='networkidle', timeout=30000)
+            self._track_playwright_response(response, name=self.category)
             if response and response.status == 404:
                 print(f"❌ Main category page returned 404 - URL may have changed: {self.base_url}")
                 await page.close()
@@ -348,6 +375,7 @@ class ElectronicFestivalScraper:
                     next_url = f"{self.base_url}?p={page_num}"
                     print(f"📡 Loading page {page_num}: {next_url}")
                     response = await page.goto(next_url, wait_until='networkidle', timeout=30000)
+                    self._track_playwright_response(response, name=self.category)
                     if response and response.status == 404:
                         print(f"  ⚠ Page {page_num} returned 404, stopping pagination")
                         break
@@ -382,6 +410,7 @@ class ElectronicFestivalScraper:
             try:
                 print("📡 Loading main category page...")
                 response = await page.goto(self.base_url, wait_until='networkidle', timeout=30000)
+                self._track_playwright_response(response, name=self.category)
                 if response and response.status == 404:
                     print(f"❌ Main category page returned 404 - URL may have changed: {self.base_url}")
                     await page.close()
@@ -419,6 +448,7 @@ class ElectronicFestivalScraper:
                 for result in results:
                     if isinstance(result, Exception):
                         print(f"❌ Subcategory scraping failed: {result}")
+                        self.metrics.record_failure(detail=str(result)[:120])
                         continue
 
                     slug, name, products = result
@@ -453,6 +483,7 @@ class ElectronicFestivalScraper:
 
         try:
             response = requests.get(image_url, timeout=10, stream=True)
+            self.metrics.record_http_response(response.status_code)
             response.raise_for_status()
 
             content_type = response.headers.get('Content-Type', '').lower()
@@ -486,6 +517,7 @@ class ElectronicFestivalScraper:
 
         except Exception as e:
             print(f"  ⚠ Error downloading image for product {product_id}: {e}")
+            self.metrics.record_failure(detail=str(e)[:120])
             return None, None
 
     def download_all_images(self):
@@ -612,8 +644,30 @@ class ElectronicFestivalScraper:
         excel_filename = f"electronic_festival_{timestamp}.xlsx"
         excel_r2_key = f"sheeel_data/year={self.year}/month={self.month}/day={self.day}/{self.category}/excel-files/{excel_filename}"
         self.upload_to_r2(excel_path, excel_r2_key)
+        self.upload_json_summary(len(self.all_products))
 
         return excel_path
+
+
+    def upload_json_summary(self, total_listings):
+        if not self.r2_client:
+            return
+
+        summary = build_daily_summary(
+            total_listings=total_listings,
+            request_metrics=self.metrics.build_block(),
+        )
+        datestamp = datetime.now().strftime("%Y%m%d")
+        summary_filename = f"summary_{datestamp}.json"
+        local_summary = self.local_data_dir / summary_filename
+        with open(local_summary, "w", encoding="utf-8") as fh:
+            json.dump(summary, fh, indent=2, ensure_ascii=False)
+
+        summary_r2_key = (
+            f"sheeel_data/year={self.year}/month={self.month}/day={self.day}/"
+            f"{self.category}/json-files/{summary_filename}"
+        )
+        self.upload_to_r2(str(local_summary), summary_r2_key)
 
     def run(self):
         print("\n" + "="*70)
