@@ -431,10 +431,31 @@ class NewArrivalsScraper:
 
         excel_r2_key = f"sheeel_data/year={self.year}/month={self.month}/day={self.day}/{self.category}/excel-files/{excel_filename}"
         self.upload_to_r2(excel_local_path, excel_r2_key)
+        self.upload_excel_json_version_to_r2(excel_local_path, excel_filename)
         self.upload_json_summary(len(self.products))
 
         return excel_local_path
 
+
+    def upload_excel_json_version_to_r2(self, excel_local_path, excel_filename):
+        if not self.r2_client:
+            return
+
+        records = getattr(self, "products", None)
+        if records is None:
+            records = getattr(self, "all_products", [])
+
+        json_filename = os.path.splitext(excel_filename)[0] + ".json"
+        json_local_path = self.local_data_dir / json_filename
+
+        with open(json_local_path, "w", encoding="utf-8") as fh:
+            json.dump(records, fh, indent=2, ensure_ascii=False, default=str)
+
+        json_r2_key = (
+            f"sheeel_data/year={self.year}/month={self.month}/day={self.day}/"
+            f"{self.category}/json version/{json_filename}"
+        )
+        self.upload_to_r2(str(json_local_path), json_r2_key)
 
     def upload_json_summary(self, total_listings):
         if not self.r2_client:
