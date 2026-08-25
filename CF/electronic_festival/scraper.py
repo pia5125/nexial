@@ -706,7 +706,7 @@ class ElectronicFestivalScraper:
             print("\n❌ No products scraped, exiting")
             return
 
-        self.download_all_images()
+        # self.download_all_images()  # disabled: image download only enabled for LogicPulse/coupons
 
         if self.r2_client:
             excel_path = self.upload_results_to_r2()
